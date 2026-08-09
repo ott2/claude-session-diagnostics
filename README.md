@@ -102,6 +102,10 @@ The suite has 98 tests and runs on Python 3.11 through 3.14. It uses synthetic
 fixtures, so it cannot catch a systematic pricing error — `DESIGN.md` explains
 how to cross-check cost changes against a frozen copy of a real corpus.
 
+To report a security problem, follow [SECURITY.md](SECURITY.md). Transcripts are
+private data, so remove anything you do not want to publish before you paste
+output into an issue.
+
 ## Layout
 
 ```

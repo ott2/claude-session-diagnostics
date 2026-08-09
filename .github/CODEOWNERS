@@ -1,0 +1,8 @@
+# Every change needs review from the owner.
+* @keziacousins
+
+# The workflows and the packaging define what runs in CI and what ships.
+# A change here needs the same review, and is called out separately so that it
+# is visible in the pull request.
+/.github/ @keziacousins
+/pyproject.toml @keziacousins
