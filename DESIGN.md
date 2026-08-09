@@ -3,6 +3,9 @@
 This document records the terms, the cost model and the measurement decisions
 behind `csd`. It explains why the code works the way it does.
 
+`FINDINGS.md` reports what one corpus showed. This document reports how the tool
+measures it. If you doubt a figure in `FINDINGS.md`, the method is here.
+
 The text follows ASD-STE100 (Simplified Technical English). Sentences are short.
 Each concept has one name. The names are defined in [Terms](#terms) and are not
 varied elsewhere.
