@@ -1,5 +1,7 @@
 # claude-session-diagnostics
 
+[![tests](https://github.com/keziacousins/claude-session-diagnostics/actions/workflows/tests.yml/badge.svg)](https://github.com/keziacousins/claude-session-diagnostics/actions/workflows/tests.yml)
+
 Cost and prompt-cache diagnostics for Claude Code session transcripts.
 Python 3.11 or later, standard library only, no dependencies.
 
@@ -617,6 +619,10 @@ python -m unittest discover -s tests
 `ccusage` is the reference for the cost calculation. This project follows its
 `(requestId, message.id)` deduplication. It adds the split between the 5-minute
 and 1-hour caches, the analysis of segments, and the accounting of restarts.
+
+## Attribution
+
+Authored by Claude Opus 5. Prompted, reviewed and tested by Kezia Cousins.
 
 ## Licence
 
