@@ -1,0 +1,6 @@
+# The source distribution carries the documents that explain the rules and the
+# figures, and the complete test package.
+include DESIGN.md
+include FINDINGS.md
+include SECURITY.md
+include tests/__init__.py

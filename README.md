@@ -10,17 +10,25 @@ Claude Code records every session as a JSONL transcript below
 reported: what was sent uncached, what was written to the prompt cache, and what
 was read back from it. `csd` reads those records and reports what they cost.
 
-It answers two questions:
+It answers three questions:
 
 - How often must you use a session to keep its cache warm?
 - What do you pay when the cache expires?
+- Which sessions can you go back to now, and for how long? (`csd warm`)
 
 The tool reads your transcripts only. It sends nothing anywhere, and it makes no
 API calls.
 
 ## Install
 
-There are no dependencies. Run it from a copy of this repository:
+There are no dependencies. Install the `csd` command from PyPI:
+
+```bash
+pip install claude-session-diagnostics
+csd summary
+```
+
+Or run it from a copy of this repository:
 
 ```bash
 git clone https://github.com/keziacousins/claude-session-diagnostics
@@ -28,16 +36,10 @@ cd claude-session-diagnostics
 python -m csd summary
 ```
 
-Or install the `csd` command:
-
-```bash
-pip install .
-csd summary
-```
-
 ## Use
 
 ```bash
+csd warm             # lanes that are still warm, and the time they have left
 csd summary          # totals, cache hit rate, cost of restarts
 csd models           # requests by model and the rates applied
 csd growth           # how cost accumulates as a session becomes longer
@@ -61,6 +63,21 @@ Every command accepts `--root` (transcript directory, default
 
 Start with `csd summary` for the totals, then `csd cold` to see which sessions
 cost the most to restart.
+
+### What is still warm
+
+`csd warm` reports the sessions that you can go back to now. It gives the time
+that each cache has left, the project, the name of the session and its id, what
+the next request pays while the cache is warm, and what the same request pays
+after the cache expires. The session that you run the command in is marked.
+
+```bash
+csd warm                  # the lanes that are still warm
+csd warm --window 300     # also the lanes that expired in the last 5 hours
+```
+
+This command reads only the transcripts that changed inside the window, and
+therefore it is fast.
 
 ### Project labels
 
@@ -98,7 +115,7 @@ Two kinds of contribution are especially useful:
 python -m unittest discover -s tests
 ```
 
-The suite has 98 tests and runs on Python 3.11 through 3.14. It uses synthetic
+The suite has 115 tests and runs on Python 3.11 through 3.14. It uses synthetic
 fixtures, so it cannot catch a systematic pricing error — `DESIGN.md` explains
 how to cross-check cost changes against a frozen copy of a real corpus.
 

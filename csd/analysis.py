@@ -6,6 +6,7 @@ Three things are measurable here without guessing:
 2. What each cold restart actually cost (`cold_starts`, `restart_report`).
 3. Where the break-even sits between carrying one large warm context and
    paying a fresh startup cost per session (`crossover`).
+4. Which lanes are still warm now, and for how long (`warm_lanes`).
 """
 
 from __future__ import annotations
@@ -13,10 +14,11 @@ from __future__ import annotations
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from . import pricing
 from .parser import Request
-from .session import Session, is_cold_start
+from .session import CACHE_TTL, Lane, Session, is_cold_start
 
 # Gap buckets for the decay curve, as (upper_bound_seconds, label).
 GAP_BUCKETS: list[tuple[float, str]] = [
@@ -1091,6 +1093,94 @@ def subagent_report(sessions: list[Session]) -> SubagentReport:
         median_duration_seconds=statistics.median(durations) if durations else 0.0,
         median_peak_context=statistics.median(peaks) if peaks else 0.0,
     )
+
+
+@dataclass
+class WarmLane:
+    """One lane and the time its cache has left before it expires.
+
+    The clock runs from the last request of the lane, not from the moment the
+    cache was written: each use of a lane sets it back to zero. `csd ttl` shows
+    the evidence. Therefore the time left is the TTL less the idle time.
+
+    The two costs are estimates for the next request in this lane. Both use the
+    context and the model of the last request:
+
+      resume_cost   the context read back from a warm cache, at 0.1x
+      rebuild_cost  the same context written again after an expiry, at 2.0x
+
+    Neither includes the output tokens or the new content of that request. Those
+    are the same in the two conditions, and the difference is the premium.
+    """
+
+    lane: Lane
+    session: Session
+    now: datetime
+    ttl: timedelta = CACHE_TTL
+
+    @property
+    def last(self) -> Request:
+        return self.lane.requests[-1]
+
+    @property
+    def idle(self) -> timedelta:
+        return self.now - self.last.timestamp
+
+    @property
+    def remaining(self) -> timedelta:
+        """Time until this cache expires. Negative after the expiry."""
+        return self.ttl - self.idle
+
+    @property
+    def is_warm(self) -> bool:
+        return self.remaining > timedelta(0)
+
+    @property
+    def context(self) -> int:
+        """The prompt size that a resume must read back."""
+        return self.last.context_tokens
+
+    @property
+    def resume_cost(self) -> float:
+        return pricing.cost(self.last.model, cache_read=self.context, at=self.now)
+
+    @property
+    def rebuild_cost(self) -> float:
+        return pricing.cost(self.last.model, cache_write_1h=self.context, at=self.now)
+
+    @property
+    def premium(self) -> float:
+        """Money that a resume pays above a warm read, if the cache expires."""
+        return pricing.cold_start_premium(self.last.model, self.context, at=self.now)
+
+
+def warm_lanes(
+    sessions: list[Session],
+    now: datetime,
+    window: timedelta = CACHE_TTL,
+    ttl: timedelta = CACHE_TTL,
+    include_subagents: bool = False,
+) -> list[WarmLane]:
+    """Lanes used within `window`, the one that expires first at the top.
+
+    Subagent lanes are excluded by default. A subagent exits after
+    approximately one minute, and therefore its cache holds nothing that the
+    operator can go back to.
+
+    Lanes that expired inside the window come last, the most recent first. A
+    window equal to the TTL gives warm lanes only.
+    """
+    found: list[WarmLane] = []
+    for session in sessions:
+        lanes = session.lanes if include_subagents else session.main_lanes
+        for lane in lanes:
+            if not lane.requests:
+                continue
+            warm = WarmLane(lane=lane, session=session, now=now, ttl=ttl)
+            if warm.idle <= window:
+                found.append(warm)
+    found.sort(key=lambda w: (not w.is_warm, w.remaining if w.is_warm else -w.remaining))
+    return found
 
 
 def totals(sessions: list[Session]) -> Totals:

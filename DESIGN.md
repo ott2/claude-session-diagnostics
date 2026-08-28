@@ -344,6 +344,60 @@ projects are the most likely to have a second session that runs at the same time
 A conversation that the operator truly resumed reads back more than 100K tokens.
 `test_warm_shared_prefix_still_counts_as_cold` guards this threshold.
 
+### The `warm` view answers a question about now
+
+`analysis.warm_lanes` reports the lanes that are still warm and the time that
+each one has left. It is the only analysis that uses the clock of the computer.
+Every other analysis reports the past.
+
+The row is a lane, not a session. A cache belongs to one lane. The time left is
+the TTL less the idle time, because the hour runs from the last use.
+
+Subagent lanes are held out by default. A subagent exits after approximately one
+minute. Its cache holds nothing that the operator can go back to.
+
+#### Read only the recent transcripts
+
+The command selects the files that a lane changed inside the window. It does not
+read the corpus. This makes the command approximately 15 times faster, which is
+necessary for a view that the operator looks at many times in one hour.
+
+The modification time of a file is never earlier than its last record. Therefore
+the filter cannot discard a lane that is still warm. It can keep a file that has
+no recent **request**, because a user message also writes a line. The analysis
+compares the timestamps of the requests, and removes those lanes.
+
+`parser.session_files` then adds the other lanes of each session. A session
+wrote its subagent lanes before the window started. Without this step the `spent`
+column shows only part of what the session cost.
+
+Verify a change to this path against a full load of the corpus. The two must
+agree for each session, to the cent.
+
+#### The two costs are estimates for the next request
+
+`resume_cost` reads the context back at 0.10x. `rebuild_cost` writes the same
+context again at 2.00x. Both use the context and the model of the last request.
+Neither includes the output tokens or the new content of the next request. Those
+are the same in the two conditions.
+
+The premium is the difference. The operator pays it only if the operator goes
+back to the lane after the expiry. A lane that expires and stays closed costs
+nothing.
+
+#### The session name comes from the transcript
+
+The client writes an `ai-title` record and writes it again as the work changes.
+The last one is the current name. Approximately one transcript in five has no
+title. Most of those have a `last-prompt` record, which is sufficient to
+recognise the session.
+
+`CLAUDE_CODE_SESSION_ID` gives the id of the session that the command runs in.
+The output marks that row.
+
+The figures come from the transcripts on disk. A request that is in flight is
+not on disk. Therefore the row for the current session is one request behind.
+
 ## The strategy comparison
 
 `analysis.compare_strategies` compares one long warm session against several

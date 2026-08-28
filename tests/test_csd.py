@@ -1351,5 +1351,252 @@ class TestTotals(unittest.TestCase):
             self.assertAlmostEqual(t.cache_hit_rate, 0.9)
 
 
+class TestWarmLanes(unittest.TestCase):
+    """Which lanes are still warm, and what going back to one costs."""
+
+    def _lane(
+        self, minutes_ago: float, *, session_id: str = "s1", read: int = 100_000
+    ) -> analysis.WarmLane:
+        now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        req = parser.Request(
+            timestamp=now - timedelta(minutes=minutes_ago),
+            model="claude-opus-5",
+            input_tokens=0,
+            output_tokens=10,
+            cache_write_5m=0,
+            cache_write_1h=1_000,
+            cache_read=read,
+            fast=False,
+            session_id=session_id,
+            project="demo",
+            transcript=Path(f"/tmp/{session_id}.jsonl"),
+            request_id="r1",
+            message_id="m1",
+            is_sidechain=False,
+            version="2.1.0",
+        )
+        sess = session.build_sessions([req])[0]
+        return analysis.WarmLane(lane=sess.lanes[0], session=sess, now=now)
+
+    def test_time_left_counts_from_the_last_request(self):
+        lane = self._lane(minutes_ago=15)
+        self.assertEqual(lane.idle, timedelta(minutes=15))
+        self.assertEqual(lane.remaining, timedelta(minutes=45))
+        self.assertTrue(lane.is_warm)
+
+    def test_a_lane_past_the_ttl_is_not_warm(self):
+        lane = self._lane(minutes_ago=75)
+        self.assertFalse(lane.is_warm)
+        self.assertEqual(lane.remaining, timedelta(minutes=-15))
+
+    def test_resume_reads_the_context_back_and_cold_writes_it(self):
+        """0.1x against 2.0x on the same tokens: the premium is the difference."""
+        lane = self._lane(minutes_ago=5)
+        context = lane.context  # 1,000 written + 100,000 read
+        self.assertEqual(context, 101_000)
+        base = context * 5.0 / 1_000_000  # Opus 5 input rate
+        self.assertAlmostEqual(lane.resume_cost, base * 0.10)
+        self.assertAlmostEqual(lane.rebuild_cost, base * 2.00)
+        self.assertAlmostEqual(lane.premium, lane.rebuild_cost - lane.resume_cost)
+
+    def _corpus(self, root: Path) -> list[session.Session]:
+        """Three main lanes, last used 5, 40 and 90 minutes before noon."""
+        for name, ts in (
+            ("s1", "2026-01-01T11:55:00Z"),
+            ("s2", "2026-01-01T11:20:00Z"),
+            ("s3", "2026-01-01T10:30:00Z"),
+        ):
+            _write_transcript(root, name, [
+                _line(ts=ts, request_id=f"r-{name}", message_id=f"m-{name}",
+                      session_id=name, write_1h=1_000, read=100_000),
+            ])
+        reqs, _ = parser.load(root=root)
+        return session.build_sessions(reqs)
+
+    def test_window_holds_out_older_lanes_and_expiry_sorts_last(self):
+        now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            sessions = self._corpus(Path(tmp))
+
+            warm = analysis.warm_lanes(sessions, now)
+            self.assertEqual([w.session.session_id for w in warm], ["s2", "s1"])
+            self.assertTrue(all(w.is_warm for w in warm))
+
+            wide = analysis.warm_lanes(sessions, now, window=timedelta(hours=3))
+            # Warm first, the one that expires soonest at the top; then the
+            # expired lanes, the most recent of them first.
+            self.assertEqual([w.session.session_id for w in wide], ["s2", "s1", "s3"])
+            self.assertFalse(wide[-1].is_warm)
+
+    def test_subagent_lanes_are_held_out_by_default(self):
+        now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            proj = root / "-Users-someone-src-demo"
+            (proj / "s1" / "subagents").mkdir(parents=True)
+            (proj / "s1" / "subagents" / "agent-a.jsonl").write_text(
+                _line(ts="2026-01-01T11:50:00Z", request_id="ra", message_id="ma",
+                      session_id="s1", write_1h=20_000) + "\n",
+                encoding="utf-8",
+            )
+            sessions = self._corpus(root)
+
+            self.assertEqual(len(analysis.warm_lanes(sessions, now)), 2)
+            folded = analysis.warm_lanes(sessions, now, include_subagents=True)
+            self.assertEqual(len(folded), 3)
+            self.assertTrue(any(w.lane.is_subagent for w in folded))
+
+
+class TestRecentTranscripts(unittest.TestCase):
+    """Selecting only the files a warm lane could have written."""
+
+    def _root(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        proj = root / "-Users-someone-src-demo"
+        (proj / "s1" / "subagents").mkdir(parents=True)
+        line = _line(ts="2026-01-01T10:00:00Z", request_id="r1", message_id="m1")
+        for rel in ("s1.jsonl", "s1/subagents/agent-a.jsonl", "old.jsonl"):
+            (proj / rel).write_text(line + "\n", encoding="utf-8")
+        return root
+
+    def _age(self, path: Path, minutes: float) -> None:
+        import os
+        stamp = datetime.now(timezone.utc).timestamp() - minutes * 60
+        os.utime(path, (stamp, stamp))
+
+    def test_since_keeps_only_recently_written_files(self):
+        root = self._root()
+        proj = root / "-Users-someone-src-demo"
+        self._age(proj / "old.jsonl", 240)
+        self._age(proj / "s1" / "subagents" / "agent-a.jsonl", 240)
+        since = datetime.now(timezone.utc) - timedelta(hours=1)
+        found = sorted(p.name for p in parser.iter_transcripts(root, since=since))
+        self.assertEqual(found, ["s1.jsonl"])
+
+    def test_a_session_keeps_the_lanes_it_wrote_earlier(self):
+        """A session's subagents ran before it, so mtime alone loses their cost."""
+        root = self._root()
+        proj = root / "-Users-someone-src-demo"
+        found = parser.session_files([proj / "s1.jsonl"], root)
+        self.assertEqual(
+            sorted(p.name for p in found), ["agent-a.jsonl", "s1.jsonl"]
+        )
+
+    def test_a_subagent_lane_pulls_in_its_main_transcript(self):
+        root = self._root()
+        proj = root / "-Users-someone-src-demo"
+        found = parser.session_files([proj / "s1" / "subagents" / "agent-a.jsonl"], root)
+        self.assertIn(proj / "s1.jsonl", found)
+
+    def test_session_dir_is_the_same_for_both_kinds_of_lane(self):
+        root = self._root()
+        proj = root / "-Users-someone-src-demo"
+        self.assertEqual(
+            parser.session_dir(proj / "s1.jsonl", root),
+            parser.session_dir(proj / "s1" / "subagents" / "agent-a.jsonl", root),
+        )
+
+
+class TestSessionTitle(unittest.TestCase):
+    """The name a transcript records for its session."""
+
+    def _write(self, lines: list[str]) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "s1.jsonl"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_the_last_title_wins(self):
+        """The client rewrites the title as the work changes."""
+        path = self._write([
+            json.dumps({"type": "ai-title", "aiTitle": "First idea"}),
+            json.dumps({"type": "last-prompt", "lastPrompt": "do the thing"}),
+            json.dumps({"type": "ai-title", "aiTitle": "What it became"}),
+        ])
+        self.assertEqual(parser.session_title(path), "What it became")
+
+    def test_the_last_prompt_names_a_session_that_has_no_title(self):
+        path = self._write([
+            json.dumps({"type": "last-prompt", "lastPrompt": "do the\n  thing"}),
+        ])
+        self.assertEqual(parser.session_title(path), "do the thing")
+
+    def test_no_title_and_no_prompt_gives_none(self):
+        path = self._write([json.dumps({"type": "user", "message": {}})])
+        self.assertIsNone(parser.session_title(path))
+
+
+class TestWarmCommand(unittest.TestCase):
+    """End to end: the table renders and names the operator's own lane."""
+
+    def _run(self, argv: list[str]) -> str:
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.main(argv)
+        return buf.getvalue()
+
+    def _root(self, minutes_ago: float = 10) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        when = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+        _write_transcript(root, "s1", [
+            _line(ts=when.strftime("%Y-%m-%dT%H:%M:%SZ"), request_id="r1",
+                  message_id="m1", session_id="s1", write_1h=1_000, read=100_000),
+            json.dumps({"type": "ai-title", "aiTitle": "Rename the widget"}),
+        ])
+        return root
+
+    def test_a_warm_lane_is_listed_with_its_title(self):
+        out = self._run(["--root", str(self._root()), "warm"])
+        self.assertIn("Rename the widget", out)
+        self.assertIn("src/demo", out)
+        # 60 minute TTL, idle 10 minutes. Part minutes are cut, not rounded up,
+        # so the time left is never overstated.
+        self.assertIn("49m", out)
+        self.assertIn("1 lane(s) still warm", out)
+
+    def test_the_current_session_is_marked(self):
+        from unittest import mock
+
+        env = {cli.CURRENT_SESSION_ENV: "s1"}
+        with mock.patch.dict("os.environ", env):
+            out = self._run(["--root", str(self._root()), "warm"])
+        self.assertIn("s1*", out)
+        self.assertIn("the session that this command is running in", out)
+
+    def test_a_subagent_lane_names_itself(self):
+        """Its session title would repeat the row above it."""
+        root = self._root()
+        nested = root / "-Users-someone-src-demo" / "s1" / "subagents"
+        nested.mkdir(parents=True)
+        when = datetime.now(timezone.utc) - timedelta(minutes=12)
+        (nested / "agent-a.jsonl").write_text(
+            _line(ts=when.strftime("%Y-%m-%dT%H:%M:%SZ"), request_id="r2",
+                  message_id="m2", session_id="s1", write_1h=20_000) + "\n",
+            encoding="utf-8",
+        )
+        out = self._run(["--root", str(root), "warm", "--include-subagents"])
+        self.assertIn("subagent agent-a", out)
+        self.assertEqual(out.count("Rename the widget"), 1)
+
+    def test_a_lane_outside_the_window_is_not_shown(self):
+        out = self._run(["--root", str(self._root(minutes_ago=200)), "warm"])
+        self.assertIn("No lane was used", out)
+
+    def test_a_wider_window_shows_the_expired_lane(self):
+        out = self._run(
+            ["--root", str(self._root(minutes_ago=200)), "warm", "--window", "300"]
+        )
+        self.assertIn("expired", out)
+        self.assertNotIn("still warm", out)
+
+
 if __name__ == "__main__":
     unittest.main()

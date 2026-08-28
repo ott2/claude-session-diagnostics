@@ -49,6 +49,11 @@ encoding cannot be decoded.
 models` after each change to `pricing.py` and check for models that have no
 price.
 
+**`csd warm` reads a part of the corpus.** It selects transcripts by
+modification time, and `parser.session_files` then adds the other lanes of each
+session. Cross-check any change to that path against a full load. The cost of
+each session must agree.
+
 **Show the total cost beside any premium.** A premium alone reads as the price of
 the request.
 

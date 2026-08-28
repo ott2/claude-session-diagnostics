@@ -1,5 +1,7 @@
 [build-system]
-requires = ["setuptools>=61"]
+# PEP 639 metadata (the SPDX "license" string and "license-files") needs
+# setuptools 77 or later. Version 76 fails to generate the metadata.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -31,6 +33,7 @@ csd = "csd.cli:main"
 [project.urls]
 Homepage = "https://github.com/keziacousins/claude-session-diagnostics"
 Source = "https://github.com/keziacousins/claude-session-diagnostics"
+Issues = "https://github.com/keziacousins/claude-session-diagnostics/issues"
 
 [tool.setuptools]
 packages = ["csd"]

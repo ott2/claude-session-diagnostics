@@ -183,6 +183,16 @@ def _first_cwd(path: Path) -> str | None:
     return None
 
 
+def _string_field(line: str, key: str) -> str | None:
+    """Read one string field from a JSON line, or None if it is not usable."""
+    try:
+        rec = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    value = rec.get(key) if isinstance(rec, dict) else None
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def transcript_project_dir(path: Path, root: Path) -> str:
     """The project directory a transcript belongs to, however deeply nested."""
     try:
@@ -204,7 +214,9 @@ def agent_id(path: Path) -> str | None:
 
 
 def iter_transcripts(
-    root: Path | str = DEFAULT_ROOT, project: str | None = None
+    root: Path | str = DEFAULT_ROOT,
+    project: str | None = None,
+    since: datetime | None = None,
 ) -> Iterator[Path]:
     """Yield every transcript under `root`, at any depth.
 
@@ -215,21 +227,108 @@ def iter_transcripts(
     Hidden directories are skipped. Claude Code writes backup copies of whole
     transcripts into `.cwd-fix-backup-*/`, and those are byte-identical
     duplicates of live sessions; including them double-counts real requests.
+
+    `since` keeps only the files modified at or after that moment. A file is
+    written when its records are written, so its modification time is never
+    earlier than its last record: the filter cannot discard a lane that is still
+    in use. It can keep a file whose last *request* is older, because a user
+    message or a mode change also writes a line, so the caller must still
+    compare the timestamps it parses.
     """
     root = Path(root).expanduser()
     if not root.exists():
         return
     needle = project.lower() if project else None
+    cutoff = since.timestamp() if since is not None else None
     for path in sorted(root.rglob("*.jsonl")):
         rel = path.relative_to(root)
         if any(part.startswith(".") for part in rel.parts):
             continue
+        if cutoff is not None:
+            try:
+                if path.stat().st_mtime < cutoff:
+                    continue
+            except OSError:
+                continue
         if needle:
             cwd = _first_cwd(path)
             haystack = (cwd or transcript_project_dir(path, root)).lower()
             if needle not in haystack:
                 continue
         yield path
+
+
+def session_dir(path: Path, root: Path | str = DEFAULT_ROOT) -> Path | None:
+    """The directory that holds a session's subagent lanes.
+
+    It is `<project>/<session-uuid>/`, whether `path` is the main transcript
+    `<project>/<session-uuid>.jsonl` or a lane below `subagents/`.
+    """
+    root = Path(root).expanduser()
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        return None
+    if "subagents" in parts:
+        parts = parts[: parts.index("subagents")]
+    else:
+        parts = parts[:-1] + (path.stem,)
+    return root.joinpath(*parts) if parts else None
+
+
+def session_files(
+    paths: Iterable[Path], root: Path | str = DEFAULT_ROOT
+) -> list[Path]:
+    """Add the rest of each session to a selection of transcripts.
+
+    A main transcript gets the subagent lanes below its session directory, and a
+    subagent lane gets its main transcript. A selection made by modification
+    time holds only the files that a session wrote recently, so without this
+    step the cost of a session includes only part of the work it did.
+    """
+    root = Path(root).expanduser()
+    # dict, not set: the order of the files stays stable, which keeps the
+    # deduplication deterministic when two files hold the same records.
+    out: dict[Path, None] = {}
+    for path in paths:
+        path = Path(path)
+        out.setdefault(path, None)
+        directory = session_dir(path, root)
+        if directory is None:
+            continue
+        main = directory.parent / f"{directory.name}.jsonl"
+        if main.is_file():
+            out.setdefault(main, None)
+        if directory.is_dir():
+            for nested in sorted(directory.rglob("*.jsonl")):
+                rel = nested.relative_to(directory)
+                if any(part.startswith(".") for part in rel.parts):
+                    continue
+                out.setdefault(nested, None)
+    return list(out)
+
+
+def session_title(path: Path) -> str | None:
+    """The name of the session that wrote this transcript, or None.
+
+    Claude Code writes an `ai-title` record and rewrites it as the work changes,
+    so the last one is the current name. Approximately one transcript in five
+    has no title. Most of those carry a `last-prompt` record, which names the
+    session well enough to recognise it.
+    """
+    title = prompt = None
+    try:
+        handle = path.open("r", encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    with handle:
+        for line in handle:
+            if '"aiTitle"' in line:
+                title = _string_field(line, "aiTitle") or title
+            elif '"lastPrompt"' in line:
+                prompt = _string_field(line, "lastPrompt") or prompt
+    text = title or prompt
+    return " ".join(text.split()) if text else None
 
 
 def parse_transcript(

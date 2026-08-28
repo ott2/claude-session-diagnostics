@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import analysis, parser as parser_mod, pricing
 from .session import CACHE_TTL, build_sessions
+
+# Claude Code exports the id of the session it runs in. When `csd` runs inside a
+# session, this names the operator's own lane.
+CURRENT_SESSION_ENV = "CLAUDE_CODE_SESSION_ID"
+
+# Files are selected by modification time, then lanes by the timestamps of their
+# requests. The margin covers the difference between the clock of the file
+# system and the clock that wrote the records.
+RECENT_MARGIN = timedelta(minutes=5)
 
 
 def _fmt_tokens(n: float) -> str:
@@ -192,6 +202,100 @@ def cmd_sessions(args) -> None:
             f"{s.project:<{w}}"
         )
     print("\n'premium' is the money paid to write context again after an expiry.")
+
+
+def _truncate(text: str, width: int) -> str:
+    return text if len(text) <= width else text[: width - 3] + "..."
+
+
+def cmd_warm(args) -> None:
+    now = datetime.now(timezone.utc)
+    ttl = _ttl(args)
+    window = timedelta(minutes=args.window) if args.window else ttl
+
+    # Only the transcripts that a lane touched inside the window can hold a warm
+    # cache, so the whole corpus is not read. `session_files` adds each
+    # session's other lanes, which it wrote earlier, so that the cost is whole.
+    recent = parser_mod.iter_transcripts(
+        args.root, args.project, since=now - window - RECENT_MARGIN
+    )
+    requests, _ = parser_mod.load(
+        root=args.root,
+        paths=parser_mod.session_files(recent, args.root),
+        project_depth=args.project_depth,
+    )
+    sessions = build_sessions(requests, ttl)
+    lanes = analysis.warm_lanes(
+        sessions, now, window=window, ttl=ttl,
+        include_subagents=args.include_subagents,
+    )
+    if not lanes:
+        print(f"No lane was used in the last {_fmt_duration(window)}.")
+        return
+
+    titles: dict[str, str] = {}
+    for w in lanes:
+        session = w.session
+        if session.session_id not in titles:
+            source = (session.main_lanes or session.lanes)[0].transcript
+            titles[session.session_id] = parser_mod.session_title(source) or "-"
+
+    current = os.environ.get(CURRENT_SESSION_ENV)
+    print(f"Lanes used in the last {_fmt_duration(window)}, at "
+          f"{now:%Y-%m-%d %H:%M} UTC.")
+    print(f"A cache stays warm for {_fmt_duration(ttl)} after the last request "
+          f"in its lane.\n")
+
+    pw = _label_width([w.session.project for w in lanes])
+    header = (f"{'left':>8}{'idle':>7}{'reqs':>6}{'context':>9}{'resume':>9}"
+              f"{'if cold':>9}{'at risk':>9}{'spent':>10}  {'project':<{pw}}  "
+              f"{'session':<10}title")
+    print(header)
+    print("-" * len(header))
+    for w in lanes:
+        left = _fmt_duration(w.remaining) if w.is_warm else "expired"
+        mark = "*" if current and w.session.session_id == current else " "
+        # A subagent lane belongs to the same session as the row above it, so it
+        # gives its own name. Two rows with the same name are unreadable.
+        name = (
+            f"subagent {w.lane.agent_id}"
+            if w.lane.is_subagent
+            else titles[w.session.session_id]
+        )
+        print(
+            f"{left:>8}{_fmt_duration(w.idle):>7}{len(w.lane.requests):>6,}"
+            f"{_fmt_tokens(w.context):>9}{_money(w.resume_cost, 9)}"
+            f"{_money(w.rebuild_cost, 9)}{_money(w.premium, 9)}"
+            f"{_money(w.session.cost, 10)}  {w.session.project:<{pw}}  "
+            f"{w.session.session_id[:8]}{mark} {_truncate(name, 48)}"
+        )
+
+    warm = [w for w in lanes if w.is_warm]
+    if warm:
+        resume = sum(w.resume_cost for w in warm)
+        rebuild = sum(w.rebuild_cost for w in warm)
+        print(
+            f"\n{len(warm)} lane(s) still warm, holding "
+            f"{_fmt_tokens(sum(w.context for w in warm))} of context. To go back to "
+            f"all of them\nnow costs ${resume:,.2f}. After their caches expire the "
+            f"same work costs ${rebuild:,.2f}."
+        )
+    if current and any(w.session.session_id == current for w in lanes):
+        print("\n* the session that this command is running in.")
+
+    print(
+        "\nleft     time until this lane's cache expires, from its last request\n"
+        "reqs     requests in this lane\n"
+        "context  the prompt size that a resume must read back\n"
+        "resume   what the next request pays for that context now, warm\n"
+        "if cold  what the same request pays after the cache expires\n"
+        "at risk  the difference between the two, and only if you go back\n"
+        "spent    everything this session cost, its subagent lanes included\n"
+        "\nEach use of a lane sets the clock back to the full TTL, so a lane stays\n"
+        "warm for as long as you return to it inside the hour (`csd ttl`).\n"
+        "The figures come from the transcripts on disk. A request in flight now\n"
+        "is not in them."
+    )
 
 
 def _ttl_table(buckets, unit: str) -> None:
@@ -769,6 +873,13 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("sessions", help="cost of each session")
     s.add_argument("-n", "--limit", type=int, default=25)
     s.set_defaults(func=cmd_sessions)
+
+    s = sub.add_parser("warm", help="lanes that are still warm, and the time they have left")
+    s.add_argument("--window", type=int, metavar="MIN",
+                   help="show lanes used in the last MIN minutes; above the TTL "
+                        "this also shows lanes that expired (default: the TTL)")
+    s.add_argument("--include-subagents", **subagent_flag)
+    s.set_defaults(func=cmd_warm)
 
     s = sub.add_parser("growth", help="how cost accumulates as a session becomes longer")
     s.add_argument("--min-requests", type=int, default=200,
