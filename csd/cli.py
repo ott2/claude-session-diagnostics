@@ -820,6 +820,7 @@ def cmd_export(args) -> None:
             "active_seconds": s.active_duration.total_seconds(),
             "peak_context": s.peak_context,
             "output_tokens": s.output_tokens,
+            "fast_output_tokens": s.fast_output_tokens,
             "input_tokens": s.input_tokens,
             "cache_write_5m": s.cache_write_5m,
             "cache_write_1h": s.cache_write_1h,

@@ -536,6 +536,7 @@ field, the lanes that it covers, and whether it is measured or inferred.
 | `active_seconds` | main | inferred | The sum of the segment durations. Gaps longer than the TTL are removed. |
 | `peak_context` | main | measured | The largest context of one request. |
 | `output_tokens` | all | measured | The sum of `output_tokens`. |
+| `fast_output_tokens` | all | measured | The sum of `output_tokens` for the requests that have `usage.speed` set to `fast`. |
 | `input_tokens` | all | measured | The sum of `input_tokens`. These prompt tokens are neither a cache write nor a cache read. |
 | `cache_write_5m` | all | measured | The sum of the 5-minute cache writes. |
 | `cache_write_1h` | all | measured | The sum of the 1-hour cache writes. Old transcripts report only a total, which the tool attributes to 1 hour. |
@@ -564,6 +565,13 @@ the reported counts.
 
 Divide by `output_tokens` to get the mean context, weighted by output, at which
 the session generated its output.
+
+### `fast_output_tokens` is the only signal of generation speed
+
+A request has one timestamp, not a start and an end. Therefore a transcript does
+not show how fast the model generated the output. The `speed` field of `usage`
+is the only record of it. `fast_output_tokens` is measured, and it is a subset
+of `output_tokens`.
 
 ## Verify a change to the cost calculation
 

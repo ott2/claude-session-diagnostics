@@ -243,6 +243,11 @@ class Session:
         return sum(r.output_tokens for r in self.requests)
 
     @property
+    def fast_output_tokens(self) -> int:
+        """Output tokens of the requests that the transcript marks as fast mode."""
+        return sum(r.output_tokens for r in self.requests if r.fast)
+
+    @property
     def input_tokens(self) -> int:
         return sum(r.input_tokens for r in self.requests)
 

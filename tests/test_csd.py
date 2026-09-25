@@ -30,12 +30,25 @@ def _line(
     session_id: str = "sess-1",
     tools: tuple[str, ...] = (),
     cwd: str = "/Users/someone/src/demo",
+    speed: str | None = None,
 ) -> str:
     content = [{"type": "text", "text": "..."}]
     content += [
         {"type": "tool_use", "id": f"tu-{i}", "name": name, "input": {}}
         for i, name in enumerate(tools)
     ]
+    usage = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_creation_input_tokens": write_1h + write_5m,
+        "cache_read_input_tokens": read,
+        "cache_creation": {
+            "ephemeral_1h_input_tokens": write_1h,
+            "ephemeral_5m_input_tokens": write_5m,
+        },
+    }
+    if speed is not None:
+        usage["speed"] = speed
     return json.dumps(
         {
             "type": "assistant",
@@ -49,16 +62,7 @@ def _line(
                 "id": message_id,
                 "model": model,
                 "content": content,
-                "usage": {
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "cache_creation_input_tokens": write_1h + write_5m,
-                    "cache_read_input_tokens": read,
-                    "cache_creation": {
-                        "ephemeral_1h_input_tokens": write_1h,
-                        "ephemeral_5m_input_tokens": write_5m,
-                    },
-                },
+                "usage": usage,
             },
         }
     )
@@ -1363,7 +1367,8 @@ class TestExport(unittest.TestCase):
             _line(ts="2026-01-01T10:00:00Z", request_id="r1", message_id="m1",
                   output_tokens=100, write_1h=10_000),
             _line(ts="2026-01-01T10:01:00Z", request_id="r2", message_id="m2",
-                  input_tokens=500, output_tokens=1_000, write_5m=4_500, read=95_000),
+                  input_tokens=500, output_tokens=1_000, write_5m=4_500, read=95_000,
+                  speed="fast"),
         ])
         nested = root / "-Users-someone-src-demo" / "s1" / "subagents"
         nested.mkdir(parents=True)
@@ -1418,6 +1423,11 @@ class TestExport(unittest.TestCase):
         with_output = 100 * 10_100 + 1_000 * 101_000 + 50 * 2_050
         self.assertLess(rec["output_context_product"], with_output)
         self.assertEqual(rec["output_context_product"], 101_100_000)
+
+    def test_fast_output_tokens_counts_only_fast_requests(self):
+        (rec,) = self._export(self._root())
+        self.assertEqual(rec["fast_output_tokens"], 1_000)
+        self.assertEqual(rec["output_tokens"], 100 + 1_000 + 50)
 
 
 class TestWarmLanes(unittest.TestCase):
