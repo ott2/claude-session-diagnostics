@@ -566,6 +566,10 @@ the reported counts.
 Divide by `output_tokens` to get the mean context, weighted by output, at which
 the session generated its output.
 
+These fields let a user apply an energy model outside the tool. `csd` ships no
+energy constants. [`docs/energy.md`](docs/energy.md) records the published
+evidence and one derivation. The tool does not read that file.
+
 ### `fast_output_tokens` is the only signal of generation speed
 
 A request has one timestamp, not a start and an end. Therefore a transcript does

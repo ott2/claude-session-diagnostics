@@ -2,5 +2,6 @@
 # figures, and the complete test package.
 include DESIGN.md
 include FINDINGS.md
+include docs/energy.md
 include SECURITY.md
 include tests/__init__.py

@@ -101,6 +101,9 @@ instead. `--project` matches against the complete working directory.
   decision, with the reason for each. Read this before you trust a number, or
   before you change the parser or the prices. Review of the method is more
   valuable than agreement with the numbers.
+- **[docs/energy.md](docs/energy.md)** — the published evidence for energy per
+  token, and how to apply it to the fields of `csd export`. `csd` ships no
+  energy constants. Every figure is a range with its assumptions.
 
 ## Contributing
 
@@ -115,7 +118,7 @@ Two kinds of contribution are especially useful:
 python -m unittest discover -s tests
 ```
 
-The suite has 115 tests and runs on Python 3.11 through 3.14. It uses synthetic
+The suite has 120 tests and runs on Python 3.11 through 3.14. It uses synthetic
 fixtures, so it cannot catch a systematic pricing error — `DESIGN.md` explains
 how to cross-check cost changes against a frozen copy of a real corpus.
 
@@ -134,6 +137,7 @@ csd/cli.py        argparse CLI
 tests/            unittest suite
 DESIGN.md         terms, cost model and measurement decisions
 FINDINGS.md       results from one corpus, framed as hypotheses
+docs/energy.md    evidence for energy per token; not read by the tool
 ```
 
 ## Prior art
