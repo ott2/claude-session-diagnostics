@@ -243,6 +243,32 @@ class Session:
         return sum(r.output_tokens for r in self.requests)
 
     @property
+    def input_tokens(self) -> int:
+        return sum(r.input_tokens for r in self.requests)
+
+    @property
+    def cache_write_5m(self) -> int:
+        return sum(r.cache_write_5m for r in self.requests)
+
+    @property
+    def cache_write_1h(self) -> int:
+        return sum(r.cache_write_1h for r in self.requests)
+
+    @property
+    def cache_read(self) -> int:
+        return sum(r.cache_read for r in self.requests)
+
+    @property
+    def output_context_product(self) -> int:
+        """Sum over requests of output tokens times the context sent.
+
+        Summed per request: the product of two averages is not the average of
+        the product. The context is the prompt the request was sent with; the
+        tokens that the request generates are not included.
+        """
+        return sum(r.output_tokens * r.context_tokens for r in self.requests)
+
+    @property
     def restarts(self) -> int:
         """Main-lane cache expiries.
 

@@ -519,6 +519,52 @@ Startup varies by a factor of approximately 2 between projects, from
 approximately 58K to approximately 120K tokens. Therefore report it for each
 project with `ready_tokens_by_project`. Do not quote one median for all projects.
 
+## The export record
+
+`csd export` writes one JSON record for each session. The table gives each
+field, the lanes that it covers, and whether it is measured or inferred.
+**Measured** means a value from the transcript, or arithmetic on such values.
+**Inferred** means a value that depends on a rule of this tool, such as the TTL.
+
+| Field | Lanes | Kind | Definition |
+|---|---|---|---|
+| `session_id` | all | measured | The `sessionId` of the session. |
+| `project` | main | measured | The project label, from the `cwd` of the main lane. |
+| `start`, `end` | all | measured | The timestamps of the first and the last request. |
+| `requests` | all | measured | The number of requests. |
+| `wall_seconds` | all | measured | The time from `start` to `end`. |
+| `active_seconds` | main | inferred | The sum of the segment durations. Gaps longer than the TTL are removed. |
+| `peak_context` | main | measured | The largest context of one request. |
+| `output_tokens` | all | measured | The sum of `output_tokens`. |
+| `input_tokens` | all | measured | The sum of `input_tokens`. These prompt tokens are neither a cache write nor a cache read. |
+| `cache_write_5m` | all | measured | The sum of the 5-minute cache writes. |
+| `cache_write_1h` | all | measured | The sum of the 1-hour cache writes. Old transcripts report only a total, which the tool attributes to 1 hour. |
+| `cache_read` | all | measured | The sum of the cache reads. |
+| `output_context_product` | all | measured | The sum, for each request, of `output_tokens` × context. See below. |
+| `cost` | all | measured | The cost in USD, from the token counts and the rates in `pricing.py`. |
+| `restarts` | main | inferred | The number of segments after the first, in each lane. |
+| `restart_premium` | main | inferred | The premium of the first request of each of those segments. |
+| `models` | all | measured | The model ids, without the date suffix. |
+
+`input_tokens`, `cache_write_5m`, `cache_write_1h` and `cache_read` divide the
+prompt tokens of the session with no overlap. Their sum is the total context
+that the session sent, over all requests.
+
+### `output_context_product` is summed for each request
+
+For each request, the tool multiplies `output_tokens` by the context of that
+request, and adds the products. Do not calculate this value from the totals. The
+product of two averages is not the average of the product. A session whose long
+outputs come late, at a large context, has a larger value than its means give.
+
+The context is the prompt that the request was sent with. It does not include
+the tokens that the request generates. Decode also attends over those tokens.
+The field excludes them on purpose, so that the value stays exact arithmetic on
+the reported counts.
+
+Divide by `output_tokens` to get the mean context, weighted by output, at which
+the session generated its output.
+
 ## Verify a change to the cost calculation
 
 Unit tests are not sufficient. The test suite uses synthetic fixtures, and

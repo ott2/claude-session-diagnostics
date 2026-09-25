@@ -1351,6 +1351,75 @@ class TestTotals(unittest.TestCase):
             self.assertAlmostEqual(t.cache_hit_rate, 0.9)
 
 
+class TestExport(unittest.TestCase):
+    """The measured token quantities in `csd export`, summed over all lanes."""
+
+    def _root(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        _write_transcript(root, "s1", [
+            # A short output at a small context, then a long one at a large context.
+            _line(ts="2026-01-01T10:00:00Z", request_id="r1", message_id="m1",
+                  output_tokens=100, write_1h=10_000),
+            _line(ts="2026-01-01T10:01:00Z", request_id="r2", message_id="m2",
+                  input_tokens=500, output_tokens=1_000, write_5m=4_500, read=95_000),
+        ])
+        nested = root / "-Users-someone-src-demo" / "s1" / "subagents"
+        nested.mkdir(parents=True)
+        (nested / "agent-a.jsonl").write_text(
+            _line(ts="2026-01-01T10:00:30Z", request_id="r3", message_id="m3",
+                  output_tokens=50, write_5m=2_000) + "\n",
+            encoding="utf-8",
+        )
+        return root
+
+    def _export(self, root: Path) -> list[dict]:
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.main(["--root", str(root), "export"])
+        return json.loads(buf.getvalue())
+
+    def test_context_split_is_summed_over_all_lanes(self):
+        (rec,) = self._export(self._root())
+        self.assertEqual(rec["requests"], 3)
+        self.assertEqual(rec["input_tokens"], 500)
+        self.assertEqual(rec["cache_write_5m"], 4_500 + 2_000)
+        self.assertEqual(rec["cache_write_1h"], 10_000)
+        self.assertEqual(rec["cache_read"], 95_000)
+        self.assertEqual(rec["output_tokens"], 100 + 1_000 + 50)
+
+    def test_context_split_accounts_for_every_prompt_token(self):
+        reqs, _ = parser.load(root=self._root())
+        (s,) = session.build_sessions(reqs)
+        self.assertEqual(
+            s.input_tokens + s.cache_write_5m + s.cache_write_1h + s.cache_read,
+            sum(r.context_tokens for r in s.requests),
+        )
+
+    def test_output_context_product_is_summed_per_request(self):
+        """The product of two averages is not the average of the product."""
+        (rec,) = self._export(self._root())
+        per_request = 100 * 10_000 + 1_000 * 100_000 + 50 * 2_000
+        self.assertEqual(rec["output_context_product"], per_request)
+
+        n = rec["requests"]
+        context = rec["input_tokens"] + rec["cache_write_5m"] \
+            + rec["cache_write_1h"] + rec["cache_read"]
+        from_means = n * (rec["output_tokens"] / n) * (context / n)
+        self.assertNotAlmostEqual(rec["output_context_product"], from_means, places=0)
+
+    def test_output_context_product_excludes_generated_tokens(self):
+        """The context is the prompt the request was sent with, not prompt plus output."""
+        (rec,) = self._export(self._root())
+        with_output = 100 * 10_100 + 1_000 * 101_000 + 50 * 2_050
+        self.assertLess(rec["output_context_product"], with_output)
+        self.assertEqual(rec["output_context_product"], 101_100_000)
+
+
 class TestWarmLanes(unittest.TestCase):
     """Which lanes are still warm, and what going back to one costs."""
 
