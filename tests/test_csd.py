@@ -31,6 +31,9 @@ def _line(
     tools: tuple[str, ...] = (),
     cwd: str = "/Users/someone/src/demo",
     speed: str | None = None,
+    # False writes the old format: only the total of the cache writes, with no
+    # `cache_creation` object to split it by TTL.
+    split: bool = True,
 ) -> str:
     content = [{"type": "text", "text": "..."}]
     content += [
@@ -42,11 +45,12 @@ def _line(
         "output_tokens": output_tokens,
         "cache_creation_input_tokens": write_1h + write_5m,
         "cache_read_input_tokens": read,
-        "cache_creation": {
+    }
+    if split:
+        usage["cache_creation"] = {
             "ephemeral_1h_input_tokens": write_1h,
             "ephemeral_5m_input_tokens": write_5m,
-        },
-    }
+        }
     if speed is not None:
         usage["speed"] = speed
     return json.dumps(
@@ -1423,6 +1427,33 @@ class TestExport(unittest.TestCase):
         with_output = 100 * 10_100 + 1_000 * 101_000 + 50 * 2_050
         self.assertLess(rec["output_context_product"], with_output)
         self.assertEqual(rec["output_context_product"], 101_100_000)
+
+    def test_old_transcript_cache_writes_go_to_1h(self):
+        """Old transcripts report only the total of the cache writes.
+
+        The parser gives that total to 1 hour, which is an inferred split. A
+        session can mix the two formats, so the measured split of the new
+        requests must stay as reported.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        _write_transcript(root, "s1", [
+            # Old format: 3,000 written, TTL not reported.
+            _line(ts="2026-01-01T10:00:00Z", request_id="r1", message_id="m1",
+                  write_5m=3_000, split=False),
+            # New format: the split is reported.
+            _line(ts="2026-01-01T10:01:00Z", request_id="r2", message_id="m2",
+                  write_5m=2_000, write_1h=1_000, read=3_000),
+        ])
+        (rec,) = self._export(root)
+        self.assertEqual(rec["cache_write_1h"], 3_000 + 1_000)
+        self.assertEqual(rec["cache_write_5m"], 2_000)
+        self.assertEqual(
+            rec["input_tokens"] + rec["cache_write_5m"]
+            + rec["cache_write_1h"] + rec["cache_read"],
+            3_000 + 3_000 + 3_000,
+        )
 
     def test_fast_output_tokens_counts_only_fast_requests(self):
         (rec,) = self._export(self._root())

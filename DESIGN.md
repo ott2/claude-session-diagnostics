@@ -538,8 +538,8 @@ field, the lanes that it covers, and whether it is measured or inferred.
 | `output_tokens` | all | measured | The sum of `output_tokens`. |
 | `fast_output_tokens` | all | measured | The sum of `output_tokens` for the requests that have `usage.speed` set to `fast`. |
 | `input_tokens` | all | measured | The sum of `input_tokens`. These prompt tokens are neither a cache write nor a cache read. |
-| `cache_write_5m` | all | measured | The sum of the 5-minute cache writes. |
-| `cache_write_1h` | all | measured | The sum of the 1-hour cache writes. Old transcripts report only a total, which the tool attributes to 1 hour. |
+| `cache_write_5m` | all | measured; split inferred for old transcripts | The sum of the 5-minute cache writes. For old transcripts, this value is 0. See below. |
+| `cache_write_1h` | all | measured; split inferred for old transcripts | The sum of the 1-hour cache writes. For old transcripts, this value is all the cache writes. See below. |
 | `cache_read` | all | measured | The sum of the cache reads. |
 | `output_context_product` | all | measured | The sum, for each request, of `output_tokens` × context. See below. |
 | `cost` | all | measured | The cost in USD, from the token counts and the rates in `pricing.py`. |
@@ -550,6 +550,18 @@ field, the lanes that it covers, and whether it is measured or inferred.
 `input_tokens`, `cache_write_5m`, `cache_write_1h` and `cache_read` divide the
 prompt tokens of the session with no overlap. Their sum is the total context
 that the session sent, over all requests.
+
+### The split of the cache writes is inferred for old transcripts
+
+A new transcript reports the 5-minute and the 1-hour writes separately, in
+`usage.cache_creation`. An old transcript does not have that object. It reports
+only `cache_creation_input_tokens`, the total. The parser gives that total to
+`cache_write_1h` (see [The cache TTL](#the-cache-ttl)).
+
+Thus the sum `cache_write_5m + cache_write_1h` is always measured. The split
+between the two fields is measured for new transcripts and inferred for old
+transcripts. The parser examines each request, so one session can contain both
+formats.
 
 ### `output_context_product` is summed for each request
 
