@@ -1422,11 +1422,30 @@ class TestExport(unittest.TestCase):
         self.assertNotAlmostEqual(rec["output_context_product"], from_means, places=0)
 
     def test_output_context_product_excludes_generated_tokens(self):
-        """The context is the prompt the request was sent with, not prompt plus output."""
-        (rec,) = self._export(self._root())
-        with_output = 100 * 10_100 + 1_000 * 101_000 + 50 * 2_050
-        self.assertLess(rec["output_context_product"], with_output)
-        self.assertEqual(rec["output_context_product"], 101_100_000)
+        """The context is the prompt the request was sent with, not prompt plus output.
+
+        Two sessions send the same prompts, and the second generates twice the
+        output of the first. If the context excludes the generated tokens, the
+        product doubles exactly. If it included them, the product would more
+        than double, because the output would appear in both factors.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        for name, scale in (("a", 1), ("b", 2)):
+            _write_transcript(root, name, [
+                _line(ts="2026-01-01T10:00:00Z", request_id=f"{name}1",
+                      message_id=f"{name}1", session_id=name,
+                      output_tokens=300 * scale, write_1h=1_000),
+                _line(ts="2026-01-01T10:01:00Z", request_id=f"{name}2",
+                      message_id=f"{name}2", session_id=name,
+                      output_tokens=700 * scale, write_5m=500, read=1_000),
+            ])
+        recs = {r["session_id"]: r for r in self._export(root)}
+        self.assertEqual(
+            recs["b"]["output_context_product"],
+            2 * recs["a"]["output_context_product"],
+        )
 
     def test_old_transcript_cache_writes_go_to_1h(self):
         """Old transcripts report only the total of the cache writes.
